@@ -37,39 +37,75 @@ type BuildArguments struct {
 	Context        string            // Optional. Build context directory to pass to `docker build`
 	Args           map[string]string // Optional. Build args to pass via `--build-arg` flags. Equivalent to ARG directives in dockerfile.
 	AdditionalTags []string          // Optional. Additional image tags to pass to docker.
+	Builder        string
+	Env            map[string]string
 }
 
 // Build will run a `docker build` command with the input uri, tag, and Dockerfile path.
 func (r Runner) Build(in *BuildArguments) error {
-	dfDir := in.Context
-	if dfDir == "" { // Context wasn't specified use the Dockerfile's directory as context.
-		dfDir = filepath.Dir(in.Dockerfile)
-	}
+	if in.Builder != "" {
+		args := []string{"build"}
 
-	args := []string{"build"}
+		args = append(args, imageName(in.URI, "latest"))
 
-	// Add additional image tags to the docker build call.
-	for _, tag := range append(in.AdditionalTags, in.ImageTag) {
-		args = append(args, "-t", imageName(in.URI, tag))
-	}
+		args = append(args, "--builder", in.Builder)
 
-	// Add the "args:" override section from manifest to the docker build call
+		dfDir := in.Context
+		if dfDir != "" {
+			args = append(args, "--path", dfDir)
+		}
 
-	// Collect the keys in a slice to sort for test stability
-	var keys []string
-	for k := range in.Args {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, in.Args[k]))
-	}
+		// Build env arguments
+		var keys []string
+		for k := range in.Env {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "--env", fmt.Sprintf("%s=%s", k, in.Env[k]))
+		}
 
-	args = append(args, dfDir, "-f", in.Dockerfile)
+		err := r.Run("pack", args)
+		if err != nil {
+			return fmt.Errorf("building image: %w", err)
+		}
 
-	err := r.Run("docker", args)
-	if err != nil {
-		return fmt.Errorf("building image: %w", err)
+		args = []string{"tag", in.URI + ":latest", in.URI + ":" + in.ImageTag}
+		err = r.Run("docker", args)
+		if err != nil {
+			return fmt.Errorf("building image: %w", err)
+		}
+	} else {
+		dfDir := in.Context
+		if dfDir == "" { // Context wasn't specified use the Dockerfile's directory as context.
+			dfDir = filepath.Dir(in.Dockerfile)
+		}
+
+		args := []string{"build"}
+
+		// Add additional image tags to the docker build call.
+		for _, tag := range append(in.AdditionalTags, in.ImageTag) {
+			args = append(args, "-t", imageName(in.URI, tag))
+		}
+
+		// Add the "args:" override section from manifest to the docker build call
+
+		// Collect the keys in a slice to sort for test stability
+		var keys []string
+		for k := range in.Args {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			args = append(args, "--build-arg", fmt.Sprintf("%s=%s", k, in.Args[k]))
+		}
+
+		args = append(args, dfDir, "-f", in.Dockerfile)
+
+		err := r.Run("docker", args)
+		if err != nil {
+			return fmt.Errorf("building image: %w", err)
+		}
 	}
 
 	return nil

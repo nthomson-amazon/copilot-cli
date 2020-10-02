@@ -27,6 +27,7 @@ const (
 
 	// Command specific flags.
 	dockerFileFlag        = "dockerfile"
+	buildpackBuilderFlag  = "builder"
 	imageTagFlag          = "tag"
 	resourceTagsFlag      = "resource-tags"
 	stackOutputDirFlag    = "output-dir"
@@ -100,6 +101,7 @@ const (
 	jobTypeFlagShort = "t"
 
 	dockerFileFlagShort        = "d"
+	buildpackBuilderFlagShort  = "b"
 	githubURLFlagShort         = "u"
 	githubAccessTokenFlagShort = "t"
 	gitBranchFlagShort         = "b"
@@ -139,9 +141,10 @@ const (
 	yesFlagDescription      = "Skips confirmation prompt."
 	jsonFlagDescription     = "Optional. Outputs in JSON format."
 
-	dockerFileFlagDescription   = "Path to the Dockerfile."
-	imageTagFlagDescription     = `Optional. The container image tag.`
-	resourceTagsFlagDescription = `Optional. Labels with a key and value separated with commas.
+	dockerFileFlagDescription       = "Optional. Path to the Dockerfile."
+	buildpackBuilderFlagDescription = "Optional. Name of the Cloud Native Buildpack builder."
+	imageTagFlagDescription         = `Optional. The container image tag.`
+	resourceTagsFlagDescription     = `Optional. Labels with a key and value separated with commas.
 Allows you to categorize resources.`
 	stackOutputDirFlagDescription = "Optional. Writes the stack template and template configuration to a directory."
 	prodEnvFlagDescription        = "If the environment contains production services."

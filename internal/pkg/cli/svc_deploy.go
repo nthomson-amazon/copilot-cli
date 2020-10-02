@@ -330,6 +330,8 @@ func (o *deploySvcOpts) getBuildArgs() (*docker.BuildArguments, error) {
 		Context:    *args.Context,
 		Args:       args.Args,
 		ImageTag:   o.imageTag,
+		Builder:    *args.Builder,
+		Env:        args.Env,
 	}, nil
 }
 

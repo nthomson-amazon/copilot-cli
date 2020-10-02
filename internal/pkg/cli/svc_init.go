@@ -45,6 +45,14 @@ Deployed resources (such as your ECR repository, logs) will contain this %[1]s's
 	svcInitSvcPortPrompt     = "Which %s do you want customer traffic sent to?"
 	svcInitSvcPortHelpPrompt = `The port will be used by the load balancer to route incoming traffic to this service.
 You should set this to the port which your Dockerfile uses to communicate with the internet.`
+
+	buildTypeDockerfile = "Dockerfile"
+	buildTypeBuildpack  = "Cloud Native Buildpacks"
+
+	buildTypes = []string{
+		"Dockerfile",
+		"Cloud Native Buildpacks",
+	}
 )
 
 const (
@@ -59,11 +67,13 @@ const (
 )
 
 type initSvcVars struct {
-	appName        string
-	serviceType    string
-	name           string
-	dockerfilePath string
-	port           uint16
+	appName          string
+	serviceType      string
+	name             string
+	buildType        string
+	dockerfilePath   string
+	buildpackBuilder string
+	port             uint16
 }
 
 type initSvcOpts struct {
@@ -240,14 +250,19 @@ func (o *initSvcOpts) newManifest() (encoding.BinaryMarshaler, error) {
 }
 
 func (o *initSvcOpts) newLoadBalancedWebServiceManifest() (*manifest.LoadBalancedWebService, error) {
-	dfPath, err := relativeDockerfilePath(o.ws, o.dockerfilePath)
-	if err != nil {
-		return nil, err
+	var err error
+	var dfPath string
+	if o.dockerfilePath != "" {
+		dfPath, err = relativeDockerfilePath(o.ws, o.dockerfilePath)
+		if err != nil {
+			return nil, err
+		}
 	}
 	props := &manifest.LoadBalancedWebServiceProps{
 		WorkloadProps: &manifest.WorkloadProps{
 			Name:       o.name,
 			Dockerfile: dfPath,
+			Builder:    o.buildpackBuilder,
 		},
 		Port: o.port,
 		Path: "/",
@@ -268,18 +283,25 @@ func (o *initSvcOpts) newLoadBalancedWebServiceManifest() (*manifest.LoadBalance
 }
 
 func (o *initSvcOpts) newBackendServiceManifest() (*manifest.BackendService, error) {
-	dfPath, err := relativeDockerfilePath(o.ws, o.dockerfilePath)
-	if err != nil {
-		return nil, err
+	var err error
+	var dfPath string
+	var hc *manifest.ContainerHealthCheck
+	if o.dockerfilePath != "" {
+		dfPath, err = relativeDockerfilePath(o.ws, o.dockerfilePath)
+		if err != nil {
+			return nil, err
+		}
+		hc, err = o.parseHealthCheck()
+		if err != nil {
+			return nil, err
+		}
 	}
-	hc, err := o.parseHealthCheck()
-	if err != nil {
-		return nil, err
-	}
+
 	return manifest.NewBackendService(manifest.BackendServiceProps{
 		WorkloadProps: manifest.WorkloadProps{
 			Name:       o.name,
 			Dockerfile: dfPath,
+			Builder:    o.buildpackBuilder,
 		},
 		Port:        o.port,
 		HealthCheck: hc,
@@ -323,22 +345,45 @@ func (o *initSvcOpts) askSvcName() error {
 
 // askDockerfile prompts for the Dockerfile by looking at sub-directories with a Dockerfile.
 func (o *initSvcOpts) askDockerfile() error {
-	if o.dockerfilePath != "" {
+	if o.dockerfilePath != "" && o.buildpackBuilder != "" {
+		return fmt.Errorf("cannot specify both dockerfile and buildpack builder")
+	}
+	if o.dockerfilePath != "" || o.buildpackBuilder != "" {
 		return nil
 	}
-	df, err := o.sel.Dockerfile(
-		fmt.Sprintf(fmtWkldInitDockerfilePrompt, color.HighlightUserInput(o.name)),
-		fmt.Sprintf(fmtWkldInitDockerfilePathPrompt, color.HighlightUserInput(o.name)),
-		wkldInitDockerfileHelpPrompt,
-		wkldInitDockerfilePathHelpPrompt,
-		func(v interface{}) error {
-			return validatePath(afero.NewOsFs(), v)
-		},
-	)
+
+	msg := fmt.Sprintf("How do you want to build your %s?", color.Emphasize("container image"))
+	t, err := o.prompt.SelectOne(msg, "help", buildTypes, prompt.WithFinalMessage("Build type:"))
 	if err != nil {
-		return err
+		return fmt.Errorf("select service type: %w", err)
 	}
-	o.dockerfilePath = df
+
+	if t == buildTypeBuildpack {
+		buildpackBuilder, err := o.prompt.Get(
+			fmt.Sprintf("Specify the %s to use", color.Emphasize("builder")),
+			"",
+			nil,
+			prompt.WithFinalMessage("Buildpack builder:"),
+			prompt.WithDefaultInput("paketobuildpacks/builder:full"))
+		if err != nil {
+			return fmt.Errorf("prompt get buildpack builder name: %w", err)
+		}
+		o.buildpackBuilder = buildpackBuilder
+	} else {
+		df, err := o.sel.Dockerfile(
+			fmt.Sprintf(fmtWkldInitDockerfilePrompt, color.HighlightUserInput(o.name)),
+			fmt.Sprintf(fmtWkldInitDockerfilePathPrompt, color.HighlightUserInput(o.name)),
+			wkldInitDockerfileHelpPrompt,
+			wkldInitDockerfilePathHelpPrompt,
+			func(v interface{}) error {
+				return validatePath(afero.NewOsFs(), v)
+			},
+		)
+		if err != nil {
+			return err
+		}
+		o.dockerfilePath = df
+	}
 	return nil
 }
 
@@ -348,22 +393,28 @@ func (o *initSvcOpts) askSvcPort() error {
 		return nil
 	}
 
-	o.setupParser(o)
-	ports, err := o.df.GetExposedPorts()
-	// Ignore any errors in dockerfile parsing--we'll use the default instead.
-	if err != nil {
-		log.Debugln(err.Error())
-	}
 	var defaultPort string
-	switch len(ports) {
-	case 0:
-		// There were no ports detected, keep the default port prompt.
+
+	if o.buildpackBuilder == "" {
+		o.setupParser(o)
+		ports, err := o.df.GetExposedPorts()
+		// Ignore any errors in dockerfile parsing--we'll use the default instead.
+		if err != nil {
+			log.Debugln(err.Error())
+		}
+
+		switch len(ports) {
+		case 0:
+			// There were no ports detected, keep the default port prompt.
+			defaultPort = defaultSvcPortString
+		case 1:
+			o.port = ports[0]
+			return nil
+		default:
+			defaultPort = strconv.Itoa(int(ports[0]))
+		}
+	} else {
 		defaultPort = defaultSvcPortString
-	case 1:
-		o.port = ports[0]
-		return nil
-	default:
-		defaultPort = strconv.Itoa(int(ports[0]))
 	}
 
 	port, err := o.prompt.Get(
@@ -388,6 +439,10 @@ func (o *initSvcOpts) askSvcPort() error {
 }
 
 func (o *initSvcOpts) parseHealthCheck() (*manifest.ContainerHealthCheck, error) {
+	if o.buildpackBuilder != "" {
+		return nil, nil
+	}
+
 	o.setupParser(o)
 	hc, err := o.df.GetHealthCheck()
 	if err != nil {
@@ -455,13 +510,17 @@ This command is also run as part of "copilot init".`,
 	cmd.Flags().StringVarP(&vars.name, nameFlag, nameFlagShort, "", svcFlagDescription)
 	cmd.Flags().StringVarP(&vars.serviceType, svcTypeFlag, svcTypeFlagShort, "", svcTypeFlagDescription)
 	cmd.Flags().StringVarP(&vars.dockerfilePath, dockerFileFlag, dockerFileFlagShort, "", dockerFileFlagDescription)
+	cmd.Flags().StringVarP(&vars.buildpackBuilder, buildpackBuilderFlag, buildpackBuilderFlagShort, "", buildpackBuilderFlagDescription)
 	cmd.Flags().Uint16Var(&vars.port, svcPortFlag, 0, svcPortFlagDescription)
 
 	// Bucket flags by service type.
 	requiredFlags := pflag.NewFlagSet("Required Flags", pflag.ContinueOnError)
 	requiredFlags.AddFlag(cmd.Flags().Lookup(nameFlag))
 	requiredFlags.AddFlag(cmd.Flags().Lookup(svcTypeFlag))
+
+	buildFlags := pflag.NewFlagSet("Build Flags", pflag.ContinueOnError)
 	requiredFlags.AddFlag(cmd.Flags().Lookup(dockerFileFlag))
+	requiredFlags.AddFlag(cmd.Flags().Lookup(buildpackBuilderFlag))
 
 	lbWebSvcFlags := pflag.NewFlagSet(manifest.LoadBalancedWebServiceType, pflag.ContinueOnError)
 	lbWebSvcFlags.AddFlag(cmd.Flags().Lookup(svcPortFlag))
@@ -473,6 +532,7 @@ This command is also run as part of "copilot init".`,
 		// The order of the sections we want to display.
 		"sections":                          fmt.Sprintf(`Required,%s`, strings.Join(manifest.ServiceTypes, ",")),
 		"Required":                          requiredFlags.FlagUsages(),
+		"Build":                             buildFlags.FlagUsages(),
 		manifest.LoadBalancedWebServiceType: lbWebSvcFlags.FlagUsages(),
 		manifest.BackendServiceType:         lbWebSvcFlags.FlagUsages(),
 	}

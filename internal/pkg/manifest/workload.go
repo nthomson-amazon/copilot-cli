@@ -49,6 +49,17 @@ type Image struct {
 func (i *Image) BuildConfig(rootDirectory string) *DockerBuildArgs {
 	df := i.dockerfile()
 	ctx := i.context()
+	bld := i.builder()
+
+	if bld != "" {
+		return &DockerBuildArgs{
+			Dockerfile: aws.String(""),
+			Context:    aws.String(ctx),
+			Builder:    aws.String(i.builder()),
+			Args:       i.args(),
+			Env:        i.env(),
+		}
+	}
 	if df != "" && ctx != "" {
 		return &DockerBuildArgs{
 			Dockerfile: aws.String(filepath.Join(rootDirectory, df)),
@@ -105,6 +116,17 @@ func (i *Image) args() map[string]string {
 	return i.Build.BuildArgs.Args
 }
 
+// builder returns the cnb builder if it exists, otherwise an empty string.
+func (i *Image) builder() string {
+	return aws.StringValue(i.Build.BuildArgs.Builder)
+}
+
+// env returns the env section, if it exists, to override environment vars in the buildpack.
+// Otherwise it returns an empty map.
+func (i *Image) env() map[string]string {
+	return i.Build.BuildArgs.Env
+}
+
 // BuildArgsOrString is a custom type which supports unmarshaling yaml which
 // can either be of type string or type DockerBuildArgs.
 type BuildArgsOrString struct {
@@ -143,10 +165,12 @@ type DockerBuildArgs struct {
 	Context    *string           `yaml:"context,omitempty"`
 	Dockerfile *string           `yaml:"dockerfile,omitempty"`
 	Args       map[string]string `yaml:"args,omitempty"`
+	Builder    *string           `yaml:"builder,omitempty"`
+	Env        map[string]string `yaml:"env,omitempty"`
 }
 
 func (b *DockerBuildArgs) isEmpty() bool {
-	if b.Context == nil && b.Dockerfile == nil && b.Args == nil {
+	if b.Context == nil && b.Dockerfile == nil && b.Args == nil && b.Builder == nil {
 		return true
 	}
 	return false
@@ -250,6 +274,7 @@ type TaskConfig struct {
 type WorkloadProps struct {
 	Name       string
 	Dockerfile string
+	Builder    string
 }
 
 // UnmarshalWorkload deserializes the YAML input stream into a workload manifest object.
